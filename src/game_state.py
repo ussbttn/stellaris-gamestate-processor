@@ -27,7 +27,11 @@ def _block(text: str, key: str, depth: int) -> str | None:
     if i < 0:
         return None
     s, e = _matching_block(text, i)
-    return text[s:e]
+    # s indexes the block's own opening '{'; strip it so a caller doing a
+    # plain .split() on a numeric array doesn't pick up a stray '{' token
+    # (that token previously inflated the "colonies" count in the Military
+    # section by one, silently, since len() doesn't care what the tokens are).
+    return text[s + 1:e]
 
 
 def _sum_resources(scope: str) -> dict[str, float]:
@@ -86,6 +90,131 @@ def _elapsed(start: str | None, now: str | None) -> str:
     if mo:
         bits.append(f"{mo} month" + ("s" if mo != 1 else ""))
     return ", ".join(bits) or "under a month"
+
+
+def _planet_class_label(pc: str) -> str:
+    return pc.removeprefix("pc_").replace("_", " ").title()
+
+
+def _building_label(building_type: str) -> str:
+    return building_type.removeprefix("building_").replace("_", " ").title()
+
+
+@dataclass
+class ColonyView:
+    name: str
+    planet_class: str
+    population: int
+    jobs: list[tuple[str, int]]
+    buildings: list[str]
+
+
+def _colony_ids(me: str) -> list[int]:
+    """Colony ids the player controls.
+
+    Despite the name, `country[P].owned_planets` holds COLONY ids, not planet
+    ids -- identical to `controlled_colonies` in every sample. Use the
+    unambiguous key.
+    """
+    cc = _block(me, "controlled_colonies", 2) or ""
+    return [int(x) for x in cc.split()]
+
+
+def _extract_colonies(gs: str, me: str) -> list[ColonyView]:
+    """Own colonies only -- gate on ownership, not intel (REDACTION_CONTRACT.md 2)."""
+    ids = _colony_ids(me)
+    if not ids:
+        return []
+
+    ci = gs.index("\ncolony=\n")
+    cs, ce = _matching_block(gs, ci)
+    colonies_blk = gs[cs:ce]
+
+    pi = gs.index("\nplanets=\n")
+    ps, pe = _matching_block(gs, pi)
+    planets_outer = gs[ps:pe]
+    planet_list = _block(planets_outer, "planet", 1) or ""
+
+    bi = gs.index("\nbuildings=\n")
+    bs0, be0 = _matching_block(gs, bi)
+    buildings_blk = gs[bs0:be0]
+
+    ji = gs.index("\npop_jobs=\n")
+    js0, je0 = _matching_block(gs, ji)
+    pop_jobs_blk = gs[js0:je0]
+
+    out: list[ColonyView] = []
+    for cid in ids:
+        cm = re.search(r"\n\t%d=\n" % cid, colonies_blk)
+        if not cm:
+            continue
+        cbs, cbe = _matching_block(colonies_blk, cm.end())
+        crec = colonies_blk[cbs:cbe]
+
+        ci2 = crec.find("carrier=")
+        pid = None
+        if ci2 >= 0:
+            cs2, ce2 = _matching_block(crec, ci2)
+            pm = re.search(r"reference=(\d+)", crec[cs2:ce2])
+            pid = int(pm.group(1)) if pm else None
+
+        name, planet_class = "Unknown Colony", "unknown"
+        if pid is not None:
+            pm2 = re.search(r"\n\t\t%d=\n" % pid, planet_list)
+            if pm2:
+                pbs, pbe = _matching_block(planet_list, pm2.end())
+                prec = planet_list[pbs:pbe]
+                pcm = re.search(r'planet_class="([^"]+)"', prec)
+                if pcm:
+                    planet_class = _planet_class_label(pcm.group(1))
+                nm = prec.find("\n\t\t\tname=")
+                if nm >= 0:
+                    ns, ne = _matching_block(prec, nm)
+                    name = _render_name(prec[ns:ne])
+
+        popm = re.search(r"\n\t\tnum_sapient_pops=(\d+)", crec)
+        population = int(popm.group(1)) if popm else 0
+
+        job_counts: dict[str, int] = {}
+        pj = _block(crec, "pop_jobs", 2) or ""
+        for jid in (int(x) for x in pj.split()):
+            jm = re.search(r"\n\t%d=\n" % jid, pop_jobs_blk)
+            if not jm:
+                continue
+            jbs, jbe = _matching_block(pop_jobs_blk, jm.end())
+            jrec = pop_jobs_blk[jbs:jbe]
+            tm = re.search(r'type="([^"]+)"', jrec)
+            wm = re.search(r"\n\t\tworkforce=(-?[0-9.]+)", jrec)
+            if not tm:
+                continue
+            count = int(float(wm.group(1))) if wm and float(wm.group(1)) >= 0 else 0
+            if count:
+                job_counts[tm.group(1)] = job_counts.get(tm.group(1), 0) + count
+        jobs = sorted(job_counts.items(), key=lambda kv: -kv[1])
+
+        seen_buildings: list[str] = []
+        bc = _block(crec, "buildings_cache", 2) or ""
+        for bid in (int(x) for x in bc.split()):
+            bm = re.search(r"\n\t%d=\n" % bid, buildings_blk)
+            if not bm:
+                continue
+            bbs, bbe = _matching_block(buildings_blk, bm.end())
+            tm = re.search(r'type="([^"]+)"', buildings_blk[bbs:bbe])
+            if not tm:
+                continue
+            label = _building_label(tm.group(1))
+            if label not in seen_buildings:
+                seen_buildings.append(label)
+        buildings = seen_buildings
+
+        out.append(ColonyView(
+            name=name,
+            planet_class=planet_class,
+            population=population,
+            jobs=jobs,
+            buildings=buildings,
+        ))
+    return out
 
 
 def _war_goal(block: str | None) -> str | None:
@@ -182,6 +311,7 @@ class Situation:
     systems_total: int
     systems_stale: int
     wars: list[WarView]
+    colonies: list[ColonyView]
 
 
 def build_situation(save_path: str) -> tuple[Situation, PlayerIntel]:
@@ -273,6 +403,9 @@ def build_situation(save_path: str) -> tuple[Situation, PlayerIntel]:
         _parse_wars(gs), intel, live_names, lambda s: _elapsed(s, now)
     )
 
+    # --- own colonies (gate on ownership, not intel) ----------------------
+    colonies = _extract_colonies(gs, me)
+
     return (
         Situation(
             date=date.group(1) if date else "?",
@@ -288,6 +421,7 @@ def build_situation(save_path: str) -> tuple[Situation, PlayerIntel]:
             systems_total=len(intel.system_intel),
             systems_stale=len(intel.remembered_systems()),
             wars=wars,
+            colonies=colonies,
         ),
         intel,
     )
@@ -346,6 +480,18 @@ def render_briefing(s: Situation) -> str:
         f"  fleet power          {s.military_power:,.0f}",
         f"  naval capacity used  {s.used_naval_capacity:,.0f}",
         f"  colonies             {s.owned_planets}",
+        "",
+        "## Colonies",
+    ]
+    for c in s.colonies:
+        L.append(f"  {c.name} ({c.planet_class}, pop {c.population:,})")
+        if c.jobs:
+            jobs = ", ".join(f"{name} {count:,}" for name, count in c.jobs)
+            L.append(f"    jobs: {jobs}")
+        if c.buildings:
+            L.append(f"    buildings: {', '.join(c.buildings)}")
+
+    L += [
         "",
         "## Active wars",
     ]

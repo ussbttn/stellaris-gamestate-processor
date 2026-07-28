@@ -30,6 +30,8 @@ from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import Any, Iterable
 
+import intel_tiers
+
 
 class IntelLevel(IntEnum):
     """Per-system intel, as stored in the save (0-4).
@@ -103,6 +105,10 @@ class PlayerIntel:
     # Handles for empires that no longer exist (slot reused at a higher
     # generation). Historical record only -- never a live contact.
     defunct_contacts: dict[int, float] = field(default_factory=dict)
+    # Active pact tokens per country (REDACTION_CONTRACT.md 1.2a), e.g.
+    # {"commercial_pact", "embassy"}. These grant category intel independently
+    # of the score in country_intel -- see effective_levels().
+    country_pacts: dict[int, frozenset[str]] = field(default_factory=dict)
 
     def level_for(self, system_id: int) -> IntelLevel:
         if 0 <= system_id < len(self.system_intel):
@@ -129,6 +135,61 @@ class PlayerIntel:
     def met_countries(self) -> set[int]:
         """Countries the player has established contact with."""
         return set(self.country_intel)
+
+
+# --------------------------------------------------------------------------
+# Pact-derived intel -- REDACTION_CONTRACT.md 1.2a
+# --------------------------------------------------------------------------
+#
+# A pact grants its category intel whenever it is active, regardless of the
+# 0-100 score in country_intel. This is additive with the score table, not a
+# replacement -- implemented as a union (max), never a lookup on its own.
+#
+# Only pacts with a field name confirmed against the example saves are
+# listed. commercial_pact, research_agreement, embassy and subject (used here
+# for overlord detection) were all observed as literal flags in
+# relations_manager.relation. federation_type strings ("hegemony_federation",
+# "research_federation") were likewise observed in the federation= block.
+#
+# defensive_pact is ASSUMED to follow the same relations_manager.relation
+# naming pattern as commercial_pact -- no example save has one active, so the
+# field name is unconfirmed. galactic_custodian, galactic_emperor,
+# waystation_pact, associate_status and secret_fealty have no confirmed save
+# field at all and are deliberately omitted: per the governing fail-closed
+# rule (contract 0), an unconfirmed grant must not be extracted, so these
+# simply contribute nothing until a save demonstrates their field names.
+PACT_CATEGORY_LEVEL: dict[str, dict[str, int]] = {
+    "commercial_pact": {"economy": 3},            # colonies_high
+    "overlord": {"economy": 3, "diplomacy": 3},   # resource_production, specialist_subject_tier
+    "subject": {"economy": 1},                    # waystations
+    "defensive_pact": {"military": 1},            # relative_fleet -- ASSUMED field name
+    "research_agreement": {"technology": 1},      # tech_relative_power
+    "embassy": {"diplomacy": 2},                  # diplomatic_pacts
+    "federation_member": {"economy": 1},          # default/hegemony/spiritualist: waystations
+    "military_federation": {"military": 1},
+    "research_federation": {"technology": 1},
+    "trade_federation": {"economy": 1},
+}
+
+
+def pact_derived_levels(pacts: Iterable[str]) -> dict[str, int]:
+    out = {c: 0 for c in intel_tiers.CATS}
+    for p in pacts:
+        for cat, lvl in PACT_CATEGORY_LEVEL.get(p, {}).items():
+            out[cat] = max(out[cat], lvl)
+    return out
+
+
+def effective_levels(score: float, pacts: Iterable[str] = ()) -> dict[str, int]:
+    """Per-category intel level: max(score-derived, pact-derived).
+
+    Score is floored before band matching inside intel_tiers.levels() --
+    bands are integer ranges, and an unfloored 79.93 falls between {70 79}
+    and {80 89} and matches neither.
+    """
+    base = intel_tiers.levels(score)
+    pact = pact_derived_levels(pacts)
+    return {c: max(base[c], pact.get(c, 0)) for c in intel_tiers.CATS}
 
 
 class Redactor:
@@ -183,6 +244,10 @@ class Redactor:
         exist. For met empires, the save's own `stale_intel` relative-power
         figures are the honest source: they are what the player's intelligence
         services believe, not ground truth.
+
+        Field gates are driven by intel_tiers.py, the verified per-category
+        band table (REDACTION_CONTRACT.md 1.2), unioned with any active pact
+        (1.2a) via effective_levels() -- never the raw score alone.
         """
         out = {}
         for cid, truth in truth_by_country.items():
@@ -200,14 +265,21 @@ class Redactor:
             believed = self.intel.country_intel_stale.get(cid)
             if believed:
                 rec["believed_relative_power"] = believed
-            if score >= 30:
+
+            levels = effective_levels(score, self.intel.country_pacts.get(cid, ()))
+            if levels["government"] >= 1:  # authority, ethics, capital_location, ...
                 for k in ("ethics", "capital_system"):
                     if k in truth:
                         rec[k] = truth[k]
-            if score >= 60:
-                for k in ("fleet_power", "tech_count", "resource_income"):
-                    if k in truth:
-                        rec[k] = truth[k]
+            if levels["technology"] >= 1:  # tech_relative_power, tech_num_category
+                if "tech_count" in truth:
+                    rec["tech_count"] = truth["tech_count"]
+            if levels["military"] >= 2:  # fleet_details, generals
+                if "fleet_power" in truth:
+                    rec["fleet_power"] = truth["fleet_power"]
+            if levels["economy"] >= 3:  # resource_production
+                if "resource_income" in truth:
+                    rec["resource_income"] = truth["resource_income"]
             out[cid] = rec
         return out
 

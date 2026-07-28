@@ -55,35 +55,81 @@ the numeric scale is confirmed.
 retains dated information. 205 such systems at 2312, 469 at 2396. Serve the
 remembered tier, marked with the level it was observed at, never as current.
 
-### 1.2 Empire knowledge — `intel_manager` **[VERIFIED structure, ASSUMED thresholds]**
+### 1.2 Empire knowledge — `intel_manager` **[VERIFIED against game files]**
 
 ```
 country[P].intel_manager.intel[<handle>]  = { intel: 0-100, stale_intel: {...} }
 country[P].intel_manager.federation_intel = same shape
 ```
 
-A single 0–100 scalar per empire. **The five intel categories are derived from
-it, not stored** — confirmed: no category breakdown exists in the save.
+A single 0-100 scalar per empire. The categories are **derived, not stored** --
+confirmed, no breakdown exists in the save. The mapping is read from
+`common/intel_levels/00_intel_levels.txt`:
 
-Vanilla thresholds per the wiki and dev diary — Low Government at 10, Low
-Military at 40, Medium Government at 40, Medium Diplomacy at 50 — meaning
-*different categories unlock at different scores*. Documented reveals:
+| intel | government | diplomacy | economy | technology | military |
+|---|---|---|---|---|---|
+| 0-9 | 0 | 0 | 0 | 0 | 0 |
+| 10-19 | 1 | 0 | 0 | 0 | 0 |
+| 20-29 | 1 | 1 | 0 | 0 | 0 |
+| 30-39 | 1 | 1 | 1 | 1 | 1 |
+| 40-49 | 2 | 1 | 1 | 1 | 1 |
+| 50-59 | 2 | 2 | 1 | 1 | 1 |
+| 60-69 | 2 | 2 | 2 | 2 | 2 |
+| 70-79 | 3 | 2 | 2 | 2 | 2 |
+| 80-89 | 3 | 3 | 2 | 2 | 2 |
+| 90-98 | 3 | 3 | 3 | 3 | 3 |
+| 99-100 | 4 | 4 | 4 | 4 | 4 |
 
-| Level | Reveals |
+**Bands are integer ranges.** Floor the raw score first: 79.93 falls between
+`{70 79}` and `{80 89}` otherwise and matches nothing.
+
+What each category level unlocks, from `common/intel_categories/`:
+
+| cat | L1 | L2 | L3 | L4 |
+|---|---|---|---|---|
+| **government** | authority, ethics, capital_location, ruler, civics | origin, relics, governors | empire_sprawl | *(nothing)* |
+| **diplomacy** | casus_belli, relative_power, rivalries, federation_name, gc_vote_breakdown | opinion_breakdown, diplomatic_pacts | specialist_subject_tier | diplomatic_pacts_secret |
+| **economy** | systems_high, relative_power, **colonies_low**, waystations | **colonies_med**, civships_locations | **colonies_high**, civships_orders, resource_production | **colonies_full** |
+| **technology** | tech_relative_power, tech_num_category | *(nothing)* | *(nothing)* | *(nothing)* |
+| **military** | casus_belli, relative_fleet, starbases, ai_prepare_war | fleet_details, generals | fleets | fleet_orders, cloaked_fleets, arkship_colonies |
+
+**Foreign colony data is therefore legitimate and graduated.** An earlier
+version of this contract excluded it entirely; that was wrong. At intel 30+ you
+get `colonies_low`, at 60+ `colonies_med`, at 90+ `colonies_high` plus
+`resource_production`, at 99+ `colonies_full`.
+
+**Technology intel is vestigial** -- only L1 grants anything. Never expose more
+than relative tech power and category counts, at any score.
+
+#### 1.2a Diplomatic pacts grant intel independently of score **[VERIFIED]**
+
+From `common/intel_categories/05_intel_diplo_pacts.txt`. These apply **whenever
+the pact is active, regardless of intel score**, and are additive with the table
+above. Gating on score alone under-reports for any pact partner.
+
+| pact | grants |
 |---|---|
-| low | government detail, relative power, rivalries, federation names, borders, casus belli |
-| medium | civics, origin, governors, opinion breakdown, pacts, ship locations |
-| high | sprawl, colony info, civilian ship orders, fleet details |
-| full | system info, full colony info, fleet orders |
+| commercial_pact | economy_relative_power, systems_med, **colonies_high** |
+| overlord (over a subject) | systems_low, **colonies_low**, specialist_subject_tier, resource_production, waystations |
+| subject (of an overlord) | waystations |
+| defensive_pact | systems_low, relative_fleet |
+| research_agreement | tech_relative_power |
+| migration_treaty / associate_status | systems_low |
+| embassy / secret_fealty | diplomatic_pacts |
+| waystation_pact | waystations, systems_high |
+| galactic_custodian | relative_fleet |
+| galactic_emperor (+heightened security) | relative_fleet, systems_high, **colonies_high**, waystations |
+| default / hegemony / spiritualist federation | systems_low, waystations |
+| military_federation | + relative_fleet |
+| research_federation | + tech_relative_power |
+| trade_federation | + economy_relative_power |
 
-**These are ASSUMED until read from `common/`.** Mods rewrite them (Counter
-Intel moves map reveals up to 50/60), so hardcoding vanilla numbers is wrong for
-a modded install. Until parsed, apply the *most conservative* reading: require
-the highest plausible threshold for each item.
+Effective level per item = **max**(level from intel score, level from any active
+pact). Implement as a union, not a lookup.
 
 **Not being in the map at all means not met.** An empire absent from
-`intel_manager.intel` does not exist as far as the player knows — omit entirely,
-including its name.
+`intel_manager.intel` does not exist as far as the player knows -- omit
+entirely, including its name.
 
 ### 1.3 Survey — **[UNRESOLVED — DO NOT EXTRACT]**
 
@@ -174,46 +220,6 @@ recycled 18 times.
 
 Naive counting reports 141 contacts, which is impossible.
 
-### Wars — gate on every belligerent **[VERIFIED structure, ASSUMED detail gate]**
-
-```
-war[<id>]                      cleared slots are written `=none`, not removed
-war[<id>].attackers[]          { call_type, country, caller, fleets_gone_mia }
-war[<id>].defenders[]          same shape
-war[<id>].attacker_war_goal    { type="wg_..." actor target win }
-war[<id>].{attacker,defender}_war_exhaustion
-war[<id>].start_date
-```
-
-A war is disclosed only when **every primary belligerent is a live, met
-handle**. Naming one side and eliding the other still discloses that the other
-exists, which §2 "Never extract" forbids — so the war is dropped whole. Serving
-"a known empire vs. someone" is worse than silence: it reads as informative.
-
-**This is where generation handles bite hardest.** Belligerents are stored as
-raw handles, and war records outlive their participants. In all three example
-saves, `war[50331651]` is fought by handle `83886088` — generation 5 of slot 8 —
-while slot 8 is currently occupied by generation 7. Matching on slot would
-render a destroyed empire's war as the living successor's, presented as current.
-Match the exact handle; a handle absent from the live country table is not a
-contact and cannot be named.
-
-**Exhaustion is scaled 0–1, not 0–100 [ASSUMED].** Every observed value is
-exactly `1`, alongside `force_peace=yes` and a `force_peace_date` — forced peace
-triggers at the exhaustion cap, so `1` is the ceiling rather than one percent.
-Inferred from saturated samples only; no unsaturated value has been observed.
-
-For a war the player is fighting, both sides' exhaustion is on the in-game war
-screen and is extracted. For a war between third parties it is a live readout of
-another empire's military condition, so it is gated at the same score as
-`fleet_power` — **ASSUMED, per §1.2's most-conservative rule**, pending
-`common/`. Below that score the war still renders; only the numbers are withheld.
-
-War names and goals use localisation keys (`NAME_WAR_OF_REVOLT`,
-`wg_independence`). Goals are de-prefixed to a readable token; war names are not
-rendered at all, since without `localisation/*.yml` they are less informative
-than the goal.
-
 ### Known space — gate on `intel_level` per system
 
 System name, position, hyperlanes, owner, starbase presence and level,
@@ -253,9 +259,7 @@ Run on every generated pair of output files, in CI, failing the build.
 5. **No lower-generation country handle** appears as a live contact.
 6. **Every stale record carries its observation level**, and no stale record is
    presented as current.
-7. **No war appears unless every primary belligerent is a live, met handle**,
-   and no destroyed belligerent resolves to the live occupant of its slot.
-8. **Ambiguous names are dropped, not flagged.** Names render without
+7. **Ambiguous names are dropped, not flagged.** Names render without
    localisation files, so two handles can collapse to one string — a met empire
    and an unmet one, typically two generations of one slot. "Rethellian Accord"
    did exactly this. A name that could mean either is useless as a leak signal
@@ -271,8 +275,8 @@ give it teeth.**
 
 1. **Survey semantics.** Blocks all deposit and planet-feature data outside own
    colonies. Settled by one paired save.
-2. **Intel category thresholds from `common/`.** Currently ASSUMED from vanilla
-   documentation; wrong for modded installs.
+2. ~~Intel category thresholds from `common/`.~~ **Resolved** -- see §1.2.
+   Re-read those files if a mod alters them; the tables above are vanilla 4.4.6.
 3. **Early-game save.** Without one, the fleet and system filters are asserted
    but not demonstrated. This is the cheapest high-value item — it needs no
    analysis, only a save from roughly 2250.

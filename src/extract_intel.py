@@ -37,6 +37,85 @@ def _array_after(txt: str, key_pos: int) -> list[int]:
     return [int(float(t)) for t in txt[start + 1 : end].split()]
 
 
+# Flags confirmed as literal `relation=` fields against the example saves
+# (relations_manager.relation, always owner=<the block's own country>).
+# `subject=yes` on a relation means the OTHER party (`country=`) is that
+# owner's subject -- so inside the player's own relations_manager it marks
+# the player as overlord. Detecting "player is a subject of X" would need
+# the reverse (X's own relations_manager), which is not read here.
+_RELATION_PACT_FLAGS = ("commercial_pact", "research_agreement", "embassy", "defensive_pact")
+
+
+def _relation_pacts(country_block: str) -> dict[int, set[str]]:
+    """Per-country active pacts from the player's own relations_manager."""
+    rmi = country_block.find("\n\t\trelations_manager=")
+    if rmi < 0:
+        return {}
+    rs, re_ = _matching_block(country_block, rmi)
+    rm = country_block[rs:re_]
+
+    out: dict[int, set[str]] = {}
+    for m in re.finditer(r"\n\t\t\trelation=\n", rm):
+        try:
+            bs, be = _matching_block(rm, m.end())
+        except (ValueError, IndexError):
+            continue
+        rec = rm[bs:be]
+        cm = re.search(r"\n\t{4}country=(\d+)", rec)
+        if not cm:
+            continue
+        cid = int(cm.group(1))
+        pacts = {flag for flag in _RELATION_PACT_FLAGS if f"\n\t\t\t\t{flag}=yes" in rec}
+        if "\n\t\t\t\tsubject=yes" in rec:
+            pacts.add("overlord")
+        if pacts:
+            out[cid] = pacts
+    return out
+
+
+def _federation_pacts(gamestate: str, player_cid: int) -> dict[int, set[str]]:
+    """Fellow federation members' pact tokens, from the top-level federation= block.
+
+    Any member gets `federation_member` (default/hegemony/spiritualist grant:
+    waystations). The federation_type string additionally names its
+    specialisation -- observed literal values include "hegemony_federation"
+    and "research_federation".
+    """
+    try:
+        i = gamestate.index("\nfederation=\n")
+    except ValueError:
+        return {}
+    s, e = _matching_block(gamestate, i)
+    block = gamestate[s:e]
+
+    out: dict[int, set[str]] = {}
+    for m in re.finditer(r"\n\t(\d+)=\n", block):
+        try:
+            bs, be = _matching_block(block, m.end())
+        except (ValueError, IndexError):
+            continue
+        rec = block[bs:be]
+        mm = re.search(r"\n\t\tmembers=\n", rec)
+        if not mm:
+            continue
+        members = set(_array_after(rec, mm.end()))
+        if player_cid not in members:
+            continue
+        ftm = re.search(r'federation_type="([^"]+)"', rec)
+        fed_type = ftm.group(1) if ftm else ""
+        tokens = {"federation_member"}
+        if "military" in fed_type:
+            tokens.add("military_federation")
+        if "research" in fed_type:
+            tokens.add("research_federation")
+        if "trade" in fed_type or "commercial" in fed_type:
+            tokens.add("trade_federation")
+        for other in members:
+            if other != player_cid:
+                out.setdefault(other, set()).update(tokens)
+    return out
+
+
 def read_gamestate(save_path: str | Path) -> str:
     """Read a .sav (zip) or a raw uncompressed gamestate file."""
     p = Path(save_path)
@@ -121,12 +200,20 @@ def extract(gamestate: str) -> PlayerIntel:
             if believed:
                 country_stale[handle] = believed
 
+    # --- active pacts, for pact-derived intel (REDACTION_CONTRACT.md 1.2a) --
+    pacts: dict[int, set[str]] = {}
+    for cid, tokens in _relation_pacts(block).items():
+        pacts.setdefault(cid, set()).update(tokens)
+    for cid, tokens in _federation_pacts(gamestate, player_cid).items():
+        pacts.setdefault(cid, set()).update(tokens)
+
     pi = PlayerIntel(
         player_country_id=player_cid,
         system_intel=system_intel,
         system_intel_peak=system_peak,
         country_intel=country_intel,
         country_intel_stale=country_stale,
+        country_pacts={cid: frozenset(tokens) for cid, tokens in pacts.items()},
     )
     pi.defunct_contacts = defunct
     return pi
