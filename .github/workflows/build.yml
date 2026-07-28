@@ -1,0 +1,52 @@
+name: Build Windows app
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install PyInstaller
+        run: pip install pyinstaller
+
+      - name: Build
+        run: >
+          pyinstaller --onefile --windowed
+          --name StellarisAdvisor
+          --paths src
+          --hidden-import extract_intel
+          --hidden-import intel_projection
+          --hidden-import game_state
+          --hidden-import watcher
+          src/gui.py
+
+      - name: Upload build
+        uses: actions/upload-artifact@v4
+        with:
+          name: StellarisAdvisor
+          path: dist/StellarisAdvisor.exe
+
+      - name: Publish to Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Latest build
+          files: dist/StellarisAdvisor.exe
+          body: |
+            Double-click **StellarisAdvisor.exe** to run. No install needed.
+
+            Windows SmartScreen will warn about an unsigned app — click
+            "More info", then "Run anyway". That warning appears for any
+            program without a paid code-signing certificate.
