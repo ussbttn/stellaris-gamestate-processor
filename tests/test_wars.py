@@ -10,13 +10,18 @@ Run: python tests/test_wars.py
 
 from __future__ import annotations
 
+import contextlib
+import io
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+import game_state                                            # noqa: E402
 from extract_intel import extract, read_gamestate           # noqa: E402
-from game_state import _elapsed, _parse_wars, build_situation, render_briefing  # noqa: E402
+from game_state import (                                    # noqa: E402
+    _elapsed, _exhaustion_pct, _parse_wars, build_situation, render_briefing,
+)
 from intel_projection import PlayerIntel, project_wars      # noqa: E402
 
 SAVES = sorted((Path(__file__).resolve().parents[1] / "Example Save Files").glob(
@@ -139,6 +144,29 @@ def main() -> int:
         kept = project_wars(_parse_wars(gs), extract(gs), {}, lambda s: "")
         ok &= check(f"{p.parent.name}: parser found 2 live war records", len(raw) == 2)
         ok &= check(f"{p.parent.name}: gate admits none", kept == [])
+
+    # 9. Exhaustion scale is unconfirmed (0-1 vs 0-100 -- REDACTION_CONTRACT.md
+    #    2), so the renderer must guess defensively rather than assume 0-1.
+    print("\n--- exhaustion scale defensiveness ---")
+    game_state._warned_high_exhaustion = False  # isolate from any prior call
+    ok &= check("fractional exhaustion renders as a percentage",
+                _exhaustion_pct(0.42) == "42%")
+    ok &= check("saturated 0-1 exhaustion renders as 100%",
+                _exhaustion_pct(1) == "100%")
+    ok &= check("unknown exhaustion renders as 'unknown'",
+                _exhaustion_pct(None) == "unknown")
+
+    buf = io.StringIO()
+    with contextlib.redirect_stderr(buf):
+        rendered = _exhaustion_pct(84)
+    ok &= check("a value already >1 is treated as a percentage, not re-scaled",
+                rendered == "84%")
+    ok &= check("the first over-1 value logs a warning", "warning" in buf.getvalue().lower())
+
+    buf2 = io.StringIO()
+    with contextlib.redirect_stderr(buf2):
+        _exhaustion_pct(90)
+    ok &= check("the warning fires only once", buf2.getvalue() == "")
 
     print("\nPASS" if ok else "\nFAIL")
     return 0 if ok else 1

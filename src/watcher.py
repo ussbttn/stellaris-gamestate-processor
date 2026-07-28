@@ -30,6 +30,7 @@ from pathlib import Path
 
 from extract_intel import _matching_block, read_gamestate
 from game_state import _render_name, build_situation, render_briefing
+from intel_projection import assert_no_leak
 
 
 def newest_save(root: Path) -> Path | None:
@@ -87,6 +88,25 @@ def emit(save_path: Path, out_dir: Path) -> str:
     sit, intel = build_situation(str(save_path))
     briefing = render_briefing(sit)
 
+    unmet_names = unmet_empire_names(
+        str(save_path), set(intel.country_intel), intel.player_country_id
+    )
+
+    # Last gate before anything touches disk: a leak must raise, not get
+    # written. system_names is empty because system names are not yet
+    # extracted into the briefing (see STATE_MAP.md), so there is nothing to
+    # check on that front. country_names uses synthetic negative ids because
+    # unmet_empire_names() has already resolved live handles and dropped
+    # names ambiguous between a met and an unmet empire (contract 2.8); real
+    # country handles are never negative, so these can't collide with a met
+    # country id and cause a false positive.
+    assert_no_leak(
+        briefing,
+        intel,
+        system_names={},
+        country_names={-(i + 1): name for i, name in enumerate(unmet_names)},
+    )
+
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Written atomically: the extension polls this file and must never read a
@@ -101,9 +121,7 @@ def emit(save_path: Path, out_dir: Path) -> str:
         "save": save_path.name,
         "systems_known": sit.systems_known,
         "systems_total": sit.systems_total,
-        "unmet_empires": unmet_empire_names(
-            str(save_path), set(intel.country_intel), intel.player_country_id
-        ),
+        "unmet_empires": unmet_names,
     }
     tmp = out_dir / "audit.json.tmp"
     tmp.write_text(json.dumps(audit, indent=1), encoding="utf-8")

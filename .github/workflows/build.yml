@@ -18,6 +18,16 @@ jobs:
         with:
           python-version: '3.12'
 
+      # REDACTION_CONTRACT.md 3: these must run in CI, against the example
+      # saves, and fail the build if they fail. shell: bash so a failure in
+      # any line stops the step -- pwsh's default error handling would let a
+      # failed test keep running and only check the last command's exit code.
+      - name: Run tests
+        shell: bash
+        run: |
+          python tests/test_wars.py
+          python tests/test_leak.py
+
       - name: Install PyInstaller
         run: pip install pyinstaller
 

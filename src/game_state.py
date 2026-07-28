@@ -8,6 +8,7 @@ to immediately discard it.
 from __future__ import annotations
 
 import re
+import sys
 from dataclasses import dataclass, field
 
 from extract_intel import _matching_block, extract, read_gamestate
@@ -292,6 +293,33 @@ def build_situation(save_path: str) -> tuple[Situation, PlayerIntel]:
     )
 
 
+_warned_high_exhaustion = False
+
+
+def _exhaustion_pct(v: float | None) -> str:
+    """Render war exhaustion as a percentage.
+
+    REDACTION_CONTRACT.md 2 flags the 0-1 scale as ASSUMED: every observed
+    sample is exactly 1, saturated alongside force_peace=yes, so a 0-100 save
+    would look identical so far. Treat <=1 as a fraction (the assumed case)
+    and >1 as already a percentage, so a save that turns out to use 0-100
+    doesn't silently render as single-digit percentages.
+    """
+    global _warned_high_exhaustion
+    if v is None:
+        return "unknown"
+    if v > 1:
+        if not _warned_high_exhaustion:
+            print(
+                f"warning: war exhaustion value {v!r} > 1 -- treating the scale as "
+                "already 0-100, not the assumed 0-1 (REDACTION_CONTRACT.md 2)",
+                file=sys.stderr,
+            )
+            _warned_high_exhaustion = True
+        return f"{v:.0f}%"
+    return f"{v * 100:.0f}%"
+
+
 def render_briefing(s: Situation) -> str:
     """The text injected into the model's context. Redacted by construction."""
     L = [
@@ -340,21 +368,21 @@ def render_briefing(s: Situation) -> str:
         if goals:
             L.append("      " + "; ".join(goals))
         if w.attacker_exhaustion is not None or w.defender_exhaustion is not None:
-            def pct(v):
-                return "unknown" if v is None else f"{v * 100:.0f}%"
             L.append(
-                f"      war exhaustion — attacker {pct(w.attacker_exhaustion)}, "
-                f"defender {pct(w.defender_exhaustion)}"
+                f"      war exhaustion — attacker {_exhaustion_pct(w.attacker_exhaustion)}, "
+                f"defender {_exhaustion_pct(w.defender_exhaustion)}"
             )
         else:
             L.append("      war exhaustion not known at your level of intel")
         L.append(f"      running {w.duration} (since {w.start_date})")
 
+    shown = s.known_empires[:15]
     L += [
         "",
-        f"## Known empires ({len(s.known_empires)} contacts)",
+        f"## Known empires ({len(s.known_empires)} contacts, {len(shown)} shown, "
+        "highest intel first)",
     ]
-    for e in s.known_empires[:15]:
+    for e in shown:
         line = f"  {e.name:28s} intel {e.intel_score:5.1f}"
         if e.believed:
             rf = e.believed.get("relative_fleet")
