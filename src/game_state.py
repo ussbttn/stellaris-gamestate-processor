@@ -91,14 +91,19 @@ def build_situation(save_path: str) -> tuple[Situation, PlayerIntel]:
     intel = extract(gs)
 
     date = re.search(r'\ndate="([^"]+)"', gs)
+    # Prefer meta (present in a packed .sav); fall back to the gamestate's own
+    # first line, which is how unpacked saves carry it.
     version = None
     try:
         import zipfile
-        with zipfile.ZipFile(save_path) as z:
-            version = re.search(r'version="([^"]+)"',
-                                z.read("meta").decode("utf-8", "replace"))
+        if zipfile.is_zipfile(save_path):
+            with zipfile.ZipFile(save_path) as z:
+                version = re.search(r'version="([^"]+)"',
+                                    z.read("meta").decode("utf-8", "replace"))
     except Exception:
         pass
+    if not version:
+        version = re.search(r'^version="([^"]+)"', gs, re.M)
 
     i = gs.index("\ncountry=\n")
     cs, ce = _matching_block(gs, i)

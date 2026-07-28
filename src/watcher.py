@@ -33,7 +33,13 @@ from game_state import _render_name, build_situation, render_briefing
 
 
 def newest_save(root: Path) -> Path | None:
-    saves = list(root.rglob("*.sav"))
+    """Newest save under root.
+
+    Accepts packed `.sav` archives (what Stellaris actually writes) and bare
+    uncompressed `gamestate` files (how they get shared for debugging).
+    """
+    saves = [p for p in root.rglob("*.sav") if p.is_file()]
+    saves += [p for p in root.rglob("*gamestate*") if p.is_file()]
     return max(saves, key=lambda p: p.stat().st_mtime) if saves else None
 
 
