@@ -1,0 +1,63 @@
+version="Pegasus v4.4.6"
+version_control_revision=52
+name="Blessed Azantian Imperium"
+date="2396.01.01"
+required_dlcs=
+{
+	"Ancient Relics Story Pack"
+	"Anniversary Portraits"
+	"Apocalypse"
+	"Aquatics Species Pack"
+	"Astral Planes"
+	"BioGenesis"
+	"Cosmic Storms"
+	"Distant Stars Story Pack"
+	"Federations"
+	"First Contact Story Pack"
+	"Galactic Paragons"
+	"Grand Archive"
+	"Horizon Signal"
+	"Leviathans Story Pack"
+	"Lithoids Species Pack"
+	"Megacorp"
+	"Necroids Species Pack"
+	"Nemesis"
+	"Overlord"
+	"Plantoids Species Pack"
+	"Shadows of the Shroud"
+	"The Machine Age"
+	"Toxoids Species Pack"
+}
+mods=
+{
+	"UI Overhaul Dynamic"
+	"UI Overhaul Dynamic - Dark UI"
+	"UI Overhaul Dynamic - Extended Topbar for DLCs"
+	"UI Overhaul Dynamic - Improved Text"
+	"UI Overhaul Dynamic - SpeedDial"
+	"UI Overhaul Dynamic - Tiny Options"
+	"UI Overhaul Dynamic - Tiny Outliner"
+}
+player_portrait="psionic_06"
+flag=
+{
+	icon=
+	{
+		category="pointy"
+		file="flag_pointy_20.dds"
+	}
+	background=
+	{
+		category="backgrounds"
+		file="flag_BG_56.dds"
+	}
+	colors=
+	{
+		"black"
+		"shadow_purple"
+		"teal"
+		"null"
+	}
+}
+meta_fleets=115
+meta_planets=5
