@@ -213,6 +213,144 @@ class Redactor:
 
 
 # --------------------------------------------------------------------------
+# Wars
+# --------------------------------------------------------------------------
+#
+# Gate, in contract terms (REDACTION_CONTRACT.md 2, "Known empires"):
+# wars are listed as gated on `intel_manager` presence, then score.
+#
+# Two rules do the real work here, and both are load-bearing:
+#
+#   1. A participant is identified by its EXACT handle. Country ids are
+#      (generation << 24) | slot, and a war record can name a handle whose slot
+#      has since been recycled at a higher generation. Resolving such a handle
+#      through its slot would attribute a dead empire's war to the living empire
+#      that inherited the slot -- the precise failure 2 calls out ("never match
+#      on slot alone"). A handle that is not live is therefore not a contact,
+#      full stop.
+#
+#   2. A war is dropped WHOLE unless every primary belligerent is nameable.
+#      "Never extract: unmet empires in any form, INCLUDING EXISTENCE" -- so a
+#      war rendered as "known empire vs. someone" still leaks the existence of
+#      an empire the player has not met, and is worse than silence because it
+#      reads as informative. Fail closed: omit the war.
+#
+# Exhaustion figures are a detailed military-intelligence value. For a war the
+# player is fighting, the in-game war screen shows both sides, so it is theirs.
+# For a war between two third parties it is ASSUMED to require the same score as
+# `fleet_power` in project_countries() -- see THIRD_PARTY_WAR_DETAIL_INTEL.
+
+# ASSUMED, not verified. Mirrors the existing >= 60 gate on fleet_power: war
+# exhaustion is the same class of figure (a live readout of another empire's
+# military condition). Contract 1.2 requires the most conservative reading
+# until the real thresholds are parsed from `common/`, and mods rewrite them.
+THIRD_PARTY_WAR_DETAIL_INTEL = 60.0
+
+
+@dataclass(frozen=True)
+class Belligerent:
+    handle: int
+    name: str
+    is_player: bool = False
+    is_primary: bool = True
+
+
+@dataclass(frozen=True)
+class WarView:
+    """A war as the player is entitled to perceive it."""
+
+    war_id: int
+    attackers: tuple[Belligerent, ...]
+    defenders: tuple[Belligerent, ...]
+    attacker_goal: str | None
+    defender_goal: str | None
+    start_date: str
+    duration: str
+    player_is_party: bool
+    # None when the exhaustion gate was not met; the war still renders without
+    # the numbers rather than being dropped for them.
+    attacker_exhaustion: float | None = None
+    defender_exhaustion: float | None = None
+
+
+def project_wars(
+    raw_wars: Iterable[dict],
+    intel: PlayerIntel,
+    names: dict[int, str],
+    duration_of,
+) -> list[WarView]:
+    """Filter omniscient war records down to the ones the player may know about.
+
+    `raw_wars` are parsed records; `names` maps LIVE country handle -> rendered
+    name and is the only naming authority, so a handle missing from it cannot be
+    named and its war cannot be shown.
+    """
+    player = intel.player_country_id
+    met = intel.met_countries() | {player}
+    out: list[WarView] = []
+
+    for w in raw_wars:
+        sides = {}
+        droppable = False
+        for side in ("attackers", "defenders"):
+            crew = []
+            for handle, call_type in w.get(side, ()):
+                # Exact-handle test. Not `handle & 0xFFFFFF`, ever.
+                if handle not in met or handle not in names:
+                    # Unmet, or a dead lower-generation handle. Either way the
+                    # player is not entitled to know this belligerent exists.
+                    if call_type == "primary":
+                        droppable = True
+                    continue
+                crew.append(
+                    Belligerent(
+                        handle=handle,
+                        name=names[handle],
+                        is_player=(handle == player),
+                        is_primary=(call_type == "primary"),
+                    )
+                )
+            if not crew:
+                droppable = True
+            sides[side] = tuple(crew)
+
+        if droppable:
+            # A primary belligerent could not be named. Omit the war entirely.
+            continue
+
+        everyone = sides["attackers"] + sides["defenders"]
+        player_is_party = any(b.is_player for b in everyone)
+
+        if player_is_party:
+            show_exhaustion = True
+        else:
+            show_exhaustion = all(
+                intel.country_intel.get(b.handle, 0.0) >= THIRD_PARTY_WAR_DETAIL_INTEL
+                for b in everyone
+                if not b.is_player
+            )
+
+        out.append(
+            WarView(
+                war_id=w["war_id"],
+                attackers=sides["attackers"],
+                defenders=sides["defenders"],
+                attacker_goal=w.get("attacker_goal"),
+                defender_goal=w.get("defender_goal"),
+                start_date=w.get("start_date", "?"),
+                duration=duration_of(w.get("start_date")),
+                player_is_party=player_is_party,
+                attacker_exhaustion=w.get("attacker_exhaustion") if show_exhaustion else None,
+                defender_exhaustion=w.get("defender_exhaustion") if show_exhaustion else None,
+            )
+        )
+
+    # Player's own wars first; they are the ones that need acting on.
+    out.sort(key=lambda v: (not v.player_is_party, v.war_id))
+    return out
+
+
+# --------------------------------------------------------------------------
 # Leak detection -- run this in CI on every briefing before it reaches a model.
 # --------------------------------------------------------------------------
 

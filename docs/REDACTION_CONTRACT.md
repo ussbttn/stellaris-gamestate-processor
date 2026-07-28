@@ -174,6 +174,46 @@ recycled 18 times.
 
 Naive counting reports 141 contacts, which is impossible.
 
+### Wars — gate on every belligerent **[VERIFIED structure, ASSUMED detail gate]**
+
+```
+war[<id>]                      cleared slots are written `=none`, not removed
+war[<id>].attackers[]          { call_type, country, caller, fleets_gone_mia }
+war[<id>].defenders[]          same shape
+war[<id>].attacker_war_goal    { type="wg_..." actor target win }
+war[<id>].{attacker,defender}_war_exhaustion
+war[<id>].start_date
+```
+
+A war is disclosed only when **every primary belligerent is a live, met
+handle**. Naming one side and eliding the other still discloses that the other
+exists, which §2 "Never extract" forbids — so the war is dropped whole. Serving
+"a known empire vs. someone" is worse than silence: it reads as informative.
+
+**This is where generation handles bite hardest.** Belligerents are stored as
+raw handles, and war records outlive their participants. In all three example
+saves, `war[50331651]` is fought by handle `83886088` — generation 5 of slot 8 —
+while slot 8 is currently occupied by generation 7. Matching on slot would
+render a destroyed empire's war as the living successor's, presented as current.
+Match the exact handle; a handle absent from the live country table is not a
+contact and cannot be named.
+
+**Exhaustion is scaled 0–1, not 0–100 [ASSUMED].** Every observed value is
+exactly `1`, alongside `force_peace=yes` and a `force_peace_date` — forced peace
+triggers at the exhaustion cap, so `1` is the ceiling rather than one percent.
+Inferred from saturated samples only; no unsaturated value has been observed.
+
+For a war the player is fighting, both sides' exhaustion is on the in-game war
+screen and is extracted. For a war between third parties it is a live readout of
+another empire's military condition, so it is gated at the same score as
+`fleet_power` — **ASSUMED, per §1.2's most-conservative rule**, pending
+`common/`. Below that score the war still renders; only the numbers are withheld.
+
+War names and goals use localisation keys (`NAME_WAR_OF_REVOLT`,
+`wg_independence`). Goals are de-prefixed to a readable token; war names are not
+rendered at all, since without `localisation/*.yml` they are less informative
+than the goal.
+
 ### Known space — gate on `intel_level` per system
 
 System name, position, hyperlanes, owner, starbase presence and level,
@@ -213,7 +253,9 @@ Run on every generated pair of output files, in CI, failing the build.
 5. **No lower-generation country handle** appears as a live contact.
 6. **Every stale record carries its observation level**, and no stale record is
    presented as current.
-7. **Ambiguous names are dropped, not flagged.** Names render without
+7. **No war appears unless every primary belligerent is a live, met handle**,
+   and no destroyed belligerent resolves to the live occupant of its slot.
+8. **Ambiguous names are dropped, not flagged.** Names render without
    localisation files, so two handles can collapse to one string — a met empire
    and an unmet one, typically two generations of one slot. "Rethellian Accord"
    did exactly this. A name that could mean either is useless as a leak signal

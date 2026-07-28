@@ -18,6 +18,7 @@ No LLM runs here. This is a file converter. All AI happens in SillyTavern.
 | Fleet visibility filter | **works, verified**, untested on early saves |
 | Redaction / projection layer | **works** for what it covers |
 | `briefing.txt` generation | **works** — narrow, ~500 tokens |
+| Active wars section | **works**, gate tested synthetically — see caveat below |
 | Watcher loop | **works** |
 | `state.json` full FoW-filtered output | **not built** |
 | Tool query interface | **not built** |
@@ -59,6 +60,9 @@ tools/
 # one pass, inspect the output
 python src/watcher.py --saves "Example Save Files" --out ./out --once
 cat out/briefing.txt
+
+# war gate tests
+python tests/test_wars.py
 
 # continuous
 python src/watcher.py \
@@ -108,5 +112,16 @@ all empires. Good for detecting change, misleading for cardinality matching.
   rendering needs `localisation/*.yml`. "Blessed Azanti Imperium" for
   "Blessed Azantian Imperium".
 - **`military_power` unvalidated** against the in-game fleet total.
+- **The war section is empty on all three example saves, correctly.** The player
+  has been at peace since 2369 (`last_date_at_war`), and both live war records
+  are fought by destroyed empires — lower-generation handles whose slots have
+  since been recycled. Every war is therefore dropped by the gate. Because an
+  empty section is also what a broken parser produces, `tests/test_wars.py`
+  exercises the gate against synthetic records where the answer is known,
+  including the slot-recycling trap. Untested against a save where the player is
+  actually at war.
+- **War exhaustion scale inferred from saturated samples only.** Every observed
+  value is `1` next to `force_peace=yes`, which implies a 0–1 scale. No
+  intermediate value has been seen.
 - **Fleet filter effectively untested.** At 2396 the empire sees 93% of fleets,
   so a filter admitting everything would pass. Needs an early save.
