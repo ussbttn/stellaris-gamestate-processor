@@ -84,6 +84,37 @@ def unmet_empire_names(save_path: str, met_handles: set[int], player: int) -> li
     return sorted(unmet_names - met_names)
 
 
+def all_system_names(save_path: str) -> dict[int, str]:
+    """System id -> rendered name, for every system in the save.
+
+    Read from the omniscient galactic_object table on purpose, same as
+    unmet_empire_names(): this feeds the leak check, not the briefing.
+    assert_no_leak() itself decides which of these names the player isn't
+    entitled to know (via intel_level/highest_intel_level) and only checks
+    those, so handing it every system name is safe -- and it's the only way
+    to actually exercise contract 3 test 2 ("no system at intel_level==0 and
+    highest_intel_level==0 is named").
+    """
+    gs = read_gamestate(save_path)
+    i = gs.index("\ngalactic_object=\n")
+    s, e = _matching_block(gs, i)
+    block = gs[s:e]
+
+    names: dict[int, str] = {}
+    for m in re.finditer(r"\n\t(\d+)=\n", block):
+        sid = int(m.group(1))
+        bs, be = _matching_block(block, m.end())
+        rec = block[bs:be]
+        nm = rec.find("\n\t\tname=")
+        if nm < 0:
+            continue
+        ns, ne = _matching_block(rec, nm)
+        name = _render_name(rec[ns:ne])
+        if name and name != "Unknown Empire":
+            names[sid] = name
+    return names
+
+
 def emit(save_path: Path, out_dir: Path) -> str:
     sit, intel = build_situation(str(save_path))
     briefing = render_briefing(sit)
@@ -93,9 +124,10 @@ def emit(save_path: Path, out_dir: Path) -> str:
     )
 
     # Last gate before anything touches disk: a leak must raise, not get
-    # written. system_names is empty because system names are not yet
-    # extracted into the briefing (see STATE_MAP.md), so there is nothing to
-    # check on that front. country_names uses synthetic negative ids because
+    # written. system_names covers every system in the save so that if system
+    # names ever enter the briefing (own colonies, known space, etc.) an
+    # unknown one gets caught here rather than silently passing because the
+    # map was empty. country_names uses synthetic negative ids because
     # unmet_empire_names() has already resolved live handles and dropped
     # names ambiguous between a met and an unmet empire (contract 2.8); real
     # country handles are never negative, so these can't collide with a met
@@ -103,7 +135,7 @@ def emit(save_path: Path, out_dir: Path) -> str:
     assert_no_leak(
         briefing,
         intel,
-        system_names={},
+        system_names=all_system_names(str(save_path)),
         country_names={-(i + 1): name for i, name in enumerate(unmet_names)},
     )
 
